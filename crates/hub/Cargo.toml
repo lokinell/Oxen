@@ -1,0 +1,34 @@
+[package]
+name = "oxen-hub"
+version = { workspace = true }
+edition = { workspace = true }
+license-file = { workspace = true }
+description = { workspace = true }
+homepage = { workspace = true }
+repository = { workspace = true }
+readme = { workspace = true }
+keywords = { workspace = true }
+categories = ["network-programming"]
+
+[[bin]]
+name = "oxen-hub"
+path = "src/main.rs"
+
+[dependencies]
+actix-web = { workspace = true }
+actix-web-httpauth = { workspace = true }
+bytes = { workspace = true }
+clap = { workspace = true }
+env_logger = "0.11"
+futures-util = { workspace = true }
+hex = { workspace = true }
+log = { workspace = true }
+reqwest = { workspace = true }
+rocksdb = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+uuid = { workspace = true }
+
+[lints]
+workspace = true
