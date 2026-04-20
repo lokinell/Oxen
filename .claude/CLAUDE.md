@@ -1,6 +1,6 @@
-**CLAUDE.md**
+# CLAUDE.md
 
-This file provides guidance to AI agents when working with code in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 # Project Overview
 
@@ -8,126 +8,125 @@ Oxen is a fast, unstructured data version control system written in Rust. It's d
 
 # Project Organization
 
-The Cargo workspace lives at the repository root, with crates under `crates/`:
-- `crates/lib/` - Core shared library (`liboxen`)
-- `crates/cli/` - Command-line interface binary (`oxen`)
-- `crates/server/` - HTTP server binary (`oxen-server`)
-- `crates/oxen-py/` - Python bindings (Rust source for `oxen-python`)
+Cargo workspace at the repository root, with crates under `crates/`:
+- `crates/lib/` - Core shared library (`liboxen`) — all business logic lives here
+- `crates/cli/` - CLI binary (`oxen`) — thin wrapper over `liboxen`
+- `crates/server/` - HTTP server binary (`oxen-server`) — actix-web, calls `liboxen::repositories::*` directly
+- `crates/oxen-py/` - PyO3 Rust source for Python bindings
 - `oxen-python/` - Python package source, tests, and `pyproject.toml`
 
 ## Architecture
 
-The project follows a workspace structure with crates in the `crates/` directory:
+All core functionality is implemented in `liboxen` first, then exposed through CLI or server interfaces. The server never touches a local checkout on disk for API-initiated operations.
 
-- **`lib/`** - Core shared library (`liboxen`) containing all the business logic
-- **`cli/`** - Command-line interface binary (`oxen`)
-- **`server/`** - HTTP server binary (`oxen-server`)
+### `crates/lib/src/` layers (top → bottom)
 
-The CLI and server both depend on the shared library to avoid code duplication. All core functionality should be implemented in the lib first, then exposed through appropriate interfaces in the CLI and server.
+```
+repositories/          ← Public API: high-level operations (add, commit, push, pull, …)
+core/v_latest/         ← Current format implementation; mirrors repositories/ structure
+core/v_old/v0_19_0/    ← Legacy format shims for migration
+core/db/               ← Raw DB access: RocksDB (key-val, merkle_node) + DuckDB (data_frames)
+model/                 ← Pure data structs: Commit, Branch, Entry, MerkleTree, Schema, …
+view/                  ← API response shapes (serialised to JSON by the server)
+storage/               ← Pluggable backends: local filesystem, S3
+error/                 ← OxenError enum (top-level error type for all lib code)
+```
 
-## Key Components
+**Most new feature work:** implement in `repositories/` (calling into `core/v_latest/`), expose in `cli/` or `server/controllers/`.
 
-### Core Architecture (`crates/lib/src/`)
-- **`core/`** - Core data structures and database operations (RocksDB for metadata, DuckDB for tabular data)
-- **`model/`** - Data structures representing commits, branches, entries, diffs, etc.
-- **`repositories/`** - Repository operations (init, clone, add, commit, push, pull, etc.) - Most high-level operations start here
-- **`view/`** - Response/view models for API endpoints
-- **`storage/`** - Storage backends (local filesystem, S3)
+### Core data structure: `CommitMerkleTree`
 
-### Data Storage
-- Uses RocksDB for metadata and version control information
-- Uses DuckDB for tabular data processing and querying
-- Implements Merkle trees for efficient change detection
+The Merkle tree (`core/v_latest/index/commit_merkle_tree.rs`) is the central data structure for change detection. Nodes are persisted in RocksDB (`core/db/merkle_node/`). Understanding this is essential when working on commit, diff, or push/pull logic.
+
+### Workspaces
+
+A *workspace* is a lightweight staged-change area attached to a remote repo (not a local checkout). Server workspace operations live in `server/controllers/workspaces/` and `core/workspaces/`. They allow clients to stage, inspect, and commit changes without cloning.
 
 ## Common Development Commands
 
-*IMPORTANT*: Our codebase assumes cargo commands are run on the whole workspace, from the workspace root, _NOT_ on specific packages.
-GOOD: `cargo check --workspace`
-BAD: `cargo check --package liboxen`
+**IMPORTANT**: Always run cargo commands from the workspace root; never target individual packages.
+```bash
+# Good
+cargo check --workspace
+# Bad
+cargo check --package liboxen
+```
 
 ### Building
 ```bash
-cargo build --workspace                           # Debug build
+cargo build --workspace
 ```
 
 ### Testing
-Many tests require the oxen server to be running. If it is not running on port 3000 and
-a test fails because it cannot connect to oxen-server, then start it:
+
+Use `bin/test-rust` instead of `cargo test` directly:
 ```bash
-cargo run -p oxen-server start
+bin/test-rust                        # All Rust tests
+bin/test-rust test_function_name     # Tests matching a name
+bin/test-rust -p                     # All Python tests (builds via maturin)
+bin/test-rust -p -k test_init        # Python tests matching test_init
+bin/test-rust --install-deps         # Install prerequisites then run
 ```
 
-Run specific tests:
+If the server is not running on port 3000 and a test fails to connect, start it first:
 ```bash
-cargo test test_function_name         # Run specific matching tests
-cargo test --lib test_function_name   # Run specific library test
+ulimit -n 10240 && cargo run -p oxen-server start
 ```
 
-Run all tests
+Debug output for a single test:
 ```bash
-ulimit -n 10240                       # Increase file handles before running tests
-cargo nextest run                     # Run all tests
-```
-
-### Testing with Debug Output
-```bash
-env RUST_LOG=warn,liboxen=debug,integration_test=debug cargo test -- --nocapture test_name
+env RUST_LOG=warn,liboxen=debug cargo test -- --nocapture test_name
 ```
 
 ### Code Quality
 ```bash
-cargo fmt --all                                    # Format code
-cargo clippy --workspace --no-deps -- -D warnings  # Lint code
-pre-commit run --all-files                         # Run pre-commit hooks (runs format and lint)
+cargo fmt --all
+cargo clippy --workspace --no-deps -- -D warnings
+pre-commit run --all-files           # runs fmt + clippy together
 ```
 
 ### Server Development
 ```bash
-ulimit -n 10240                     # Increase file handles before running the server
-bacon server                        # Start server with live reload
-```
-
-### CLI Usage
-```bash
-export PATH="$PATH:/path/to/Oxen/target/debug"
-oxen init                           # Initialize repository
-oxen status                         # Check status
-oxen add images/                    # Add files
-oxen commit -m "message"            # Commit changes
-oxen push origin main               # Push to remote
+ulimit -n 10240
+bacon server                         # live-reload server
 ```
 
 ## Code Organization
-- We define module exports in a `<module_name>.rs` file at the same level as the corresponding `module_name/` directory and *NOT* the older `mod.rs` pattern.
+- Module exports use a `<module_name>.rs` file at the same level as the `module_name/` directory — not the `mod.rs` pattern.
+- Tests go in `repositories/` (high-level), not `core/v_latest/` (implementation detail).
 
 ## Error Handling
-- Use the result type (`Result<T, Error>`) when an operation could fail.
-- Never use `.unwrap()` or `.expect()` on a `Result` or on an `Option`.
-  + Exception: In test-only code, it is ok to use use `.expect(<descriptive explanation of invariant that was violated>)` since we want to fail fast and have good stack traces for failing test cases.
-- Use as specific of an error type as possible for a function. Don't use a wider type unless it's necessary. When making modules and related pieces of code, try to use a locally-defined error enum for them if they all have similar errors.
-- Make sure there's an `OxenError` variant for every error type. Be liberal in wrapping other modules error types, or other specific error types, in a new variant. Use a `Box<>` wrapper for it and have a `#[from]` to derive.
-- `OxenError` is the top-level type for everything. If you need to unify different error types into one, use `OxenError`. These kinds of functions should return `Result<T, OxenError>`
-- Implement proper error propagation through the `?` operator.
+- Return `Result<T, OxenError>` for anything that can fail. `OxenError` is the unified top-level error type.
+- Never use `.unwrap()` or `.expect()` outside of test code.
+  - In tests, `.expect("<invariant description>")` is acceptable for fast failure with a clear message.
+- Use the most specific error type possible within a module; wrap into `OxenError` at module boundaries via `#[from]` + `Box<>`.
+- When adding an `OxenError` variant, update the `hint()` method if a user-facing hint applies.
+- Propagate with `?`; never silently swallow errors.
 
-# Making Changes
+## Making Changes
 
-- When changing something that is documented in nearby code, or appears in any markdown files in the repository, update the affected documentation.
-- When prompted to always do something a certain way in general, add an entry to this section of the CLAUDE.md file.
-- When calling `get_staged_db_manager`, follow the doc comment on that function: drop the returned `StagedDBManager` as soon as possible (via a block scope or explicit `drop()`) to avoid holding the shared database handle longer than necessary.
-- When altering the `OxenError` enum, consider whether a hint needs to be added or updated in the `hint` method.
-- Instead of using `cargo test` to test Rust code, use the `bin/test-rust` script. The script usage is documented in a comment at the top of its file.
-- The `bin/test-rust` script does not install prerequisites by default. If any dependencies turn out to be missing, prompt the user to run `bin/install-prereqs` (or re-run `bin/test-rust --install-deps`).
-- Prefer using inline code over creating a new function when the function would only be called once and the function body would be less than 15 lines.
-- Preserve comments whenever possible. Comments that were written by someone other than Claude should always be preserved or updated if possible.
-- The Python project calls into the Rust project. Whenever changing the Rust code, check to see if the Python code needs to be updated.
-- After changing any Rust or Python code, verify that Rust tests pass with `bin/test-rust` and Python tests pass with `bin/test-rust -p`
-- When updating a dependency, prefer updating to the latest stable version.
-- Any new or changed Rust code that touches IO (file system, network, etc.) should be async code. Instead of std::io or std::fs, use equivalents from tokio. When an external dependency doesn't support async, use tokio's spawn_blocking functionality.
-- oxen-server operations should never touch a local checkout on disk when doing operations initiated by its API.
+- **`bin/test-rust`** — always use this script, not `cargo test`, to run Rust tests.
+- **`bin/install-prereqs`** — run if dependencies are missing (or pass `--install-deps` to `bin/test-rust`).
+- **After any Rust or Python change** — verify with `bin/test-rust` and `bin/test-rust -p`.
+- **IO code** — all file-system and network code must be async (`tokio::fs`, `tokio::io`). Use `tokio::task::spawn_blocking` when a dependency lacks async support.
+- **`get_staged_db_manager`** — drop the returned `StagedDBManager` as soon as possible (block scope or explicit `drop()`).
+- **Inline vs function** — prefer inline code when a function would only be called once and is < 15 lines.
+- **Python bindings** — when changing Rust-exposed APIs, check whether `crates/oxen-py/` and `oxen-python/` need updates.
+- **Dependencies** — prefer updating to the latest stable version.
+- **Comments** — preserve all existing comments; update them if the surrounding code changes.
+- **Documentation** — update nearby markdown files and doc comments when changing documented behaviour.
+- **This file** — add new standing rules here when instructed to "always do X".
 
-# Testing Rules
-- Use the test helpers in `crates/lib/src/test.rs` (e.g., `run_empty_local_repo_test`) for unit tests in the lib code.
-- Try to use the minimal helper for the scenario you are testing. E.g., don't use `run_training_data_fully_sync_remote` when `run_one_commit_local_repo_test` is enough.
-- When possible, put tests in the higher-level `repositories` module rather than the lower-level, version-specific implementation.
-    - e.g., Tests should go in `repositories/commits.rs` rather than `core/v_latest/commits.rs`.
-- Tests create unique temporary directories and clean up automatically
+## Testing Rules
+
+Test helpers in `crates/lib/src/test.rs` (choose the minimal one for the scenario):
+
+| Helper | When to use |
+|--------|-------------|
+| `run_empty_dir_test` | Just need a temp directory |
+| `run_empty_local_repo_test` | Need an initialised local repo |
+| `run_one_commit_local_repo_test` | Need one committed file, local only |
+| `run_one_commit_sync_repo_test` | Need one commit synced to a remote |
+| `run_training_data_fully_sync_remote` | Need full dataset pushed to remote |
+
+Async variants end in `_async`. Tests create unique temp directories and clean up automatically.
