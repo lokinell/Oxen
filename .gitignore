@@ -30,3 +30,6 @@ cli-test/vendor/
 .superset
 
 data/
+
+.omc
+.idea
